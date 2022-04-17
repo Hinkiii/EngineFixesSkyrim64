@@ -27,6 +27,9 @@ void MessageHandler(SKSE::MessagingInterface::Message* a_msg)
         if (*config::fixTreeReflections)
             fixes::PatchTreeReflections();
 
+        if (*config::fixDoublePerkApply)
+            fixes::PatchDoublePerkApply();
+
         logger::trace("clearing node map"sv);
         warnings::ClearNodeMap();
 

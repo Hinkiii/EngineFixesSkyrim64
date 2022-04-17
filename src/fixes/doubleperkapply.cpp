@@ -15,32 +15,89 @@ namespace fixes
     REL::Relocation<std::uintptr_t> DoHandleHook{ offsets::DoublePerkApply::Do_Handle_Hook, 0x11 };
     REL::Relocation<std::uintptr_t> DoAddHook{ offsets::DoublePerkApply::Do_Add_Hook, 0x11 };
 
+    using ActorPerkData = std::map<RE::FormID,uint8_t>;
+    std::map<RE::FormID,ActorPerkData> actorPerkMap;
+    bool isSaveLoading = false;
+
+    class LoadGameEventSink : public RE::BSTEventSink<RE::TESLoadGameEvent>
+    {
+        virtual RE::BSEventNotifyControl ProcessEvent( RE::TESLoadGameEvent const* a_event, RE::BSTEventSource<RE::TESLoadGameEvent>* a_eventSource ) override
+        {
+            _CRT_UNUSED( a_event );
+            _CRT_UNUSED( a_eventSource );
+
+            isSaveLoading = false;
+
+            // Clear all entries after the save has been loaded
+            actorPerkMap.clear();
+
+            return RE::BSEventNotifyControl::kContinue;
+        }
+    } loadEventSink;
+
+    class SaveLoadEventSink : public RE::BSTEventSink<RE::BGSSaveLoadManagerEvent>
+    {
+        virtual RE::BSEventNotifyControl ProcessEvent( RE::BGSSaveLoadManagerEvent const* a_event, RE::BSTEventSource<RE::BGSSaveLoadManagerEvent>* a_eventSource ) override
+        {
+            _CRT_UNUSED( a_eventSource );
+
+            // 0 = Unknown
+            // 1 = Save game
+            // 2 = Load game
+            isSaveLoading = *(uint8_t*)a_event == 2;
+
+            return RE::BSEventNotifyControl::kContinue;
+        }
+    } saveLoadEventSink;
+
     void do_add(RE::Actor* actorPtr, RE::BGSPerk* perkPtr, std::int8_t newRank)
     {
         std::int8_t oldRank = 0;
         const auto formid = actorPtr->GetFormID();
 
-        if (formid == next_formid)
-        {
-            //_DMESSAGE("perk loop in formid %08X", formid);
-            next_formid = 0;
-            if (formid != 0x14)  // player formid = 0x14
-                oldRank |= 0x100;
-        }
+        //if (formid == next_formid)
+        //{
+        //    //_DMESSAGE("perk loop in formid %08X", formid);
+        //    next_formid = 0;
+        //    if (formid != 0x14)  // player formid = 0x14
+        //        oldRank |= 0x100;
+        //}
 
-        QueueApplyPerk(RE::TaskQueueInterface::GetSingleton(), actorPtr, perkPtr, oldRank, newRank);
+        // Player do not has this problem, skipping check
+        // Also skip check for dynamically created actor after the save has been loaded
+        if( formid == 0x14 || !isSaveLoading )
+            QueueApplyPerk(RE::TaskQueueInterface::GetSingleton(), actorPtr, perkPtr, oldRank, newRank);
+        else
+        {
+            auto& actorPerks = actorPerkMap[ formid ];
+            // Add entry only when it is not done yet
+            auto iter = actorPerks.find( perkPtr->formID );
+            if( iter == actorPerks.end() )
+            {
+                actorPerks[ perkPtr->formID ] = newRank;
+                QueueApplyPerk(RE::TaskQueueInterface::GetSingleton(), actorPtr, perkPtr, oldRank, newRank);
+            }
+            else
+            {
+                RE::ConsoleLog::GetSingleton()->Print( fmt::format( "{} ({:08X}) trying to apply perk {} ({:08X}) more than one time"sv,
+                    actorPtr->GetDisplayFullName(),
+                    formid,
+                    perkPtr->GetFullName(),
+                    perkPtr->formID ).c_str() );
+            }
+        }
     }
 
     void do_handle(std::int64_t actorPtr, std::uint32_t val)
     {
-        bool shouldClear = (val & 0x100) != 0;
+        //bool shouldClear = (val & 0x100) != 0;
 
-        if (shouldClear)
-        {
-            std::int64_t apm = *((std::int64_t*)(actorPtr + 0xF0));  // actorprocessmanager 0xF0 in SSE Actor
-            if (apm != 0)
-                HandleAddRf(apm);
-        }
+        //if (shouldClear)
+        //{
+        //    std::int64_t apm = *((std::int64_t*)(actorPtr + 0xF0));  // actorprocessmanager 0xF0 in SSE Actor
+        //    if (apm != 0)
+        //        HandleAddRf(apm);
+        //}
     }
 
     bool PatchDoublePerkApply()
@@ -201,6 +258,9 @@ namespace fixes
                 DoAddHook.address(),
                 trampoline.allocate(code));
         }
+
+        RE::ScriptEventSourceHolder::GetSingleton()->AddEventSink( &loadEventSink );
+        RE::BGSSaveLoadManager::GetSingleton()->AddEventSink( &saveLoadEventSink );
 
         logger::trace("success");
 
